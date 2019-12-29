@@ -5,7 +5,9 @@ set -o pipefail
 set -o nounset
 
 warn() {
-  ( [ "$#" = 0 ] && cat || cat <<<"$*" ) 1>&2
+  while read line ; do
+    [ -z "${line:-}" ] || cat <<<"${file:+${file}: }${line}" 1>&2
+  done <<<"$([ "$#" = 0 ] && cat || cat <<<"$*")"
 }
 
 die () {
@@ -13,22 +15,39 @@ die () {
   exit 1
 }
 
-shebang() {
-  local interpreter
-  read interpreter _ <<<"$(head -2 -- "$file" | grep '^#!' | head -1 | sed -e s/^..//)"
+not() {
+  ( "$@" ) && return 1 || return 0
+}
 
-  if [ -x "${interpreter}" ] ; then
-    echo "${interpreter}"
+shebang() {
+  local -a interpreter
+  read -a interpreter <<<"$(head -2 -- "$file" | grep '^#!' | head -1 | sed -e 's/^..//' -e 's/[;#].*//')"
+
+  if [ -f "${interpreter[0]}" ] && [ -x "${interpreter[0]}" ] ; then
+    echo "${interpreter[@]}"
   else
-    warn "${file}: ${interpreter} not found."
+    warn "${interpreter[0]} not found."
   fi
 }
 
-check_shellscript() {
-  local interpreter="$(shebang)"
-  [ -n "${interpreter}" ] || return 0
+check_perlscript() {
+  local -a interpreter=($(shebang))
+  [ "${#interpreter[@]}" -gt 0 ] || interpreter=("$(which perl)")
 
-  "${interpreter}" -n "${file}"
+  "${interpreter[@]}" -c -- "${file}"
+}
+
+check_puppetscript() {
+  which 1>/dev/null 2>/dev/null puppet || { warn "Install puppet to check puppet scripts like $file" ; return 0 ; }
+
+  warn <<<"$(puppet parser validate -- "$file" 2>&1)"
+}
+
+check_shellscript() {
+  local -a interpreter="$(shebang)"
+  [ "${#interpreter[@]}" -gt 0 ] || return 0
+
+  "${interpreter[@]}" -n  -- "${file}"
 }
 
 declare opts=""
@@ -80,8 +99,21 @@ for file in "${files[@]}" ; do
       text/*shellscript)
         check_shellscript 
       ;;
+      text/*perl)
+        check_perlscript
+      ;;
+      text/*)
+        case "${suffix:-}" in
+          pp)
+            check_puppetscript
+          ;;
+          *)
+            warn "unsupported suffix $suffix not checked."
+          ;;
+        esac
+      ;;
       *)
-        warn "$file: unsupported filetype $filetype not checked."
+        warn "unsupported filetype $filetype not checked."
       ;;
     esac
   ) & pids+=($!)
