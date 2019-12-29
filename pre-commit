@@ -79,7 +79,7 @@ files+=("$@")
 
 while read file ; do
   files+=("$file")
-done <<<"$([ -n "${option[all]:-}" ] && find . -type f \! -path \*/.git/\* || git diff --name-only --diff-filter=AM)"
+done <<<"$([ -n "${option[all]:-}" ] && find . -type f \! -path \*/.git/\* || git diff --cached --name-only --diff-filter=AM)"
 
 declare -a pids=()
 for file in "${files[@]}" ; do
