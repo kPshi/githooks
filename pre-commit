@@ -1,0 +1,93 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+warn() {
+  ( [ "$#" = 0 ] && cat || cat <<<"$*" ) 1>&2
+}
+
+die () {
+  warn "$@"
+  exit 1
+}
+
+shebang() {
+  local interpreter
+  read interpreter _ <<<"$(head -2 -- "$file" | grep '^#!' | head -1 | sed -e s/^..//)"
+
+  if [ -x "${interpreter}" ] ; then
+    echo "${interpreter}"
+  else
+    warn "${file}: ${interpreter} not found."
+  fi
+}
+
+check_shellscript() {
+  local interpreter="$(shebang)"
+  [ -n "${interpreter}" ] || return 0
+
+  "${interpreter}" -n "${file}"
+}
+
+declare opts=""
+opts="$(getopt --options a,h --longoptions all,help --name "$(basename "$0")" -- "$@")"
+eval set -- "$opts"
+
+declare -a files=()
+declare -A option=()
+
+while [ "$1" != -- ] ; do
+  case "$1" in
+    -a|--all)
+      option["all"]=1
+    ;;
+    -h|--help)
+      die <<-END
+				Syntax: $(basename "$0") [<options>]
+				Where options are
+				  -a|--all      check all files found, not only those about to be committed
+				  -h|--help     show this help
+			END
+    ;;
+  esac
+  shift
+done
+shift
+
+files+=("$@")
+
+while read file ; do
+  files+=("$file")
+done <<<"$([ -n "${option[all]:-}" ] && find . -type f \! -path \*/.git/\* || git diff --name-only --diff-filter=AM)"
+
+declare -a pids=()
+for file in "${files[@]}" ; do
+  (
+    set -o errexit
+    set -o pipefail
+    set -o nounset
+
+    declare basename="$(basename "$file")"
+    declare suffix="${basename##*.}"
+    [ "$suffix" != "$basename" ] || suffix=""
+    declare filetype="$(file --brief --mime-type -- "$file")"
+  
+    case "$filetype" in
+      text/*shellscript)
+        check_shellscript 
+      ;;
+      *)
+        warn "$file: unsupported filetype $filetype not checked."
+      ;;
+    esac
+  ) & pids+=($!)
+done
+
+declare -i rt_code=0
+for pid in "${pids[@]}" ; do
+  wait "$pid" || rt_code=$?
+done
+
+exit $rt_code
