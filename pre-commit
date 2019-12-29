@@ -64,6 +64,8 @@ done <<<"$([ -n "${option[all]:-}" ] && find . -type f \! -path \*/.git/\* || gi
 
 declare -a pids=()
 for file in "${files[@]}" ; do
+  [ -f "${file}" ] || continue
+
   (
     set -o errexit
     set -o pipefail
