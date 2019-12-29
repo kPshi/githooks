@@ -19,6 +19,19 @@ not() {
   ( "$@" ) && return 1 || return 0
 }
 
+check() {
+  local -a cmd=("$@")
+  local tmpfile="$(mktemp)"
+
+  local -i rt_code=0
+  command "${cmd[@]}" 1>"${tmpfile}" 2>&1 || rt_code=$?
+
+  [ "${rt_code}" = 0 ] || warn < "${tmpfile}"
+  rm -f -- "${tmpfile}"
+
+  return $rt_code
+}
+
 shebang() {
   local -a interpreter
   read -a interpreter <<<"$(head -2 -- "$file" | grep '^#!' | head -1 | sed -e 's/^..//' -e 's/[;#].*//')"
@@ -34,20 +47,20 @@ check_perlscript() {
   local -a interpreter=($(shebang))
   [ "${#interpreter[@]}" -gt 0 ] || interpreter=("$(which perl)")
 
-  "${interpreter[@]}" -c -- "${file}"
+  check "${interpreter[@]}" -c -- "${file}"
 }
 
 check_puppetscript() {
   which 1>/dev/null 2>/dev/null puppet || { warn "Install puppet to check puppet scripts like $file" ; return 0 ; }
 
-  warn <<<"$(puppet parser validate -- "$file" 2>&1)"
+  check puppet parser validate -- "$file"
 }
 
 check_shellscript() {
   local -a interpreter="$(shebang)"
   [ "${#interpreter[@]}" -gt 0 ] || return 0
 
-  "${interpreter[@]}" -n  -- "${file}"
+  check "${interpreter[@]}" -n  -- "${file}"
 }
 
 declare opts=""
@@ -81,47 +94,49 @@ while read file ; do
   files+=("$file")
 done <<<"$([ -n "${option[all]:-}" ] && find . -type f \! -path \*/.git/\* || git diff --cached --name-only --diff-filter=AM)"
 
-declare -a pids=()
+declare rt_code=0
 for file in "${files[@]}" ; do
   [ -f "${file}" ] || continue
 
-  (
-    set -o errexit
-    set -o pipefail
-    set -o nounset
+  set -o errexit
+  set -o pipefail
+  set -o nounset
 
-    declare basename="$(basename "$file")"
-    declare suffix="${basename##*.}"
-    [ "$suffix" != "$basename" ] || suffix=""
-    declare filetype="$(file --brief --mime-type -- "$file")"
-  
-    case "$filetype" in
-      text/*shellscript)
-        check_shellscript 
-      ;;
-      text/*perl)
-        check_perlscript
-      ;;
-      text/*)
-        case "${suffix:-}" in
-          pp)
-            check_puppetscript
-          ;;
-          *)
-            warn "unsupported suffix $suffix not checked."
-          ;;
-        esac
-      ;;
-      *)
-        warn "unsupported filetype $filetype not checked."
-      ;;
-    esac
-  ) & pids+=($!)
-done
+  declare basename="$(basename "$file")"
+  declare suffix="${basename##*.}"
+  [ "$suffix" != "$basename" ] || suffix=""
+  declare filetype="$(file --brief --mime-type -- "$file")"
 
-declare -i rt_code=0
-for pid in "${pids[@]}" ; do
-  wait "$pid" || rt_code=$?
+  case "$filetype" in
+    text/*shellscript)
+      check_shellscript || rt_code=$?
+    ;;
+    text/*perl)
+      check_perlscript|| rt_code=$?
+    ;;
+    text/*)
+      case "${suffix:-}" in
+        pp)
+          check_puppetscript || rt_code=$?
+        ;;
+        *)
+          warn "unsupported suffix $suffix not checked."
+        ;;
+      esac
+    ;;
+    *)
+      warn "unsupported filetype $filetype not checked."
+    ;;
+  esac
 done
+unset file
+
+if [ "$rt_code" != 0 ] ; then
+  warn <<-END
+		 
+		When you think this is an error or you really want to commit, try
+		  git commit --no-validate ...
+	END
+fi
 
 exit $rt_code
